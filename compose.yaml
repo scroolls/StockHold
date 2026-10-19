@@ -1,0 +1,62 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: stockhold
+      POSTGRES_USER: stockhold
+      POSTGRES_PASSWORD: stockhold-local-only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockhold -d stockhold"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.5
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --default-log-level=warn
+    ports:
+      - "127.0.0.1:19092:19092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "-X", "brokers=127.0.0.1:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://stockhold:stockhold-local-only@db:5432/stockhold?sslmode=disable
+      KAFKA_BROKERS: redpanda:9092
+      GRPC_LISTEN_ADDR: ":9090"
+      SWEEP_INTERVAL: 2s
+      OUTBOX_INTERVAL: 1s
+    ports:
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD", "/stockholdctl", "-addr", "127.0.0.1:9090", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redpanda_data:

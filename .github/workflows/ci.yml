@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: stockhold_test
+          POSTGRES_USER: stockhold
+          POSTGRES_PASSWORD: stockhold
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stockhold -d stockhold_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://stockhold:stockhold@127.0.0.1:5432/stockhold_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build container image
+        run: docker build -t stockhold:ci .
+      - name: Start broker
+        run: |
+          cp .env.example .env
+          docker compose up -d redpanda
+          for attempt in $(seq 1 30); do
+            if docker compose exec -T redpanda rpk cluster health -X brokers=127.0.0.1:9092; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs redpanda
+          exit 1
+      - name: Test Kafka delivery
+        env:
+          TEST_KAFKA_BROKERS: 127.0.0.1:19092
+        run: go test -race -count=1 -run '^TestKafkaDelivery$' ./internal/stockhold
+      - name: Stop broker
+        if: always()
+        run: docker compose down
